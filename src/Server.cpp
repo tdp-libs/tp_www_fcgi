@@ -11,12 +11,11 @@
 #include <boost/algorithm/string/finder.hpp>
 #include <boost/utility/string_view.hpp>
 
-//dnf install fcgi-devel -y
-//dnf install nginx -y
-//dnf install spawn-fcgi -y
+//dnf install fcgi-devel nginx spawn-fcgi -y
 #include <fcgio.h>
 
 #include <fstream>
+#include <thread>
 
 #include <vector>
 
@@ -69,7 +68,7 @@ void decodeURL(std::string& text)
       if(i>=iMax)
         break;
 
-      char val = fromHex(*i)<<4;
+      char val = char(fromHex(*i)<<4);
 
       i++;
       if(i>=iMax)
@@ -82,7 +81,7 @@ void decodeURL(std::string& text)
     }
   }
 
-  int newSize = o-(&text[0]);
+  size_t newSize = size_t(o-(&text[0]));
   text.resize(newSize);
 }
 
@@ -113,11 +112,11 @@ void splitParams(const std::string& content, std::unordered_map<std::string, std
 //##################################################################################################
 bool parseMultipartParam(std::ostream& err, const boost::string_view& content, tp_www::MultipartFormData& param)
 {
-  int headerEnd = content.find("\r\n\r\n");
-  if(headerEnd>=int(content.size()))
+  size_t headerEnd = content.find("\r\n\r\n");
+  if(headerEnd>=content.size())
     return false;
 
-  int contentStart = headerEnd+4;
+  size_t contentStart = headerEnd+4;
 
   std::vector<std::string> headders;
   tpSplit(headders, content.substr(0, headerEnd).to_string(), "\r\n");
@@ -127,8 +126,8 @@ bool parseMultipartParam(std::ostream& err, const boost::string_view& content, t
     if(headder.size()<1)
       continue;
 
-    int del = headder.find(':');
-    if(del<1 || del>=int(headder.size()))
+    size_t del = headder.find(':');
+    if(del<1 || del>=headder.size())
     {
       err << "Fail::: " << headder << "\n";
       return false;
@@ -141,15 +140,14 @@ bool parseMultipartParam(std::ostream& err, const boost::string_view& content, t
     param.headers[key] = value;
   }
 
-  param.contentType = tp_utils::getMapValue<std::string>(param.headers, "Content-Type");
+  param.contentType = tpGetMapValue(param.headers, "Content-Type");
   tpRemoveChar(param.contentType, ' ');
 
   {
     //https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Disposition
     //Content-Disposition: form-data; name="file-0"; filename="pic.png
-    std::string line = tp_utils::getMapValue<std::string>(param.headers, "Content-Disposition");
+    std::string line = tpGetMapValue(param.headers, "Content-Disposition");
 
-    err << "######### line:" << line << "\n";
     std::vector<std::string> parts;
     tpSplit(parts, line, ";");
 
@@ -162,11 +160,10 @@ bool parseMultipartParam(std::ostream& err, const boost::string_view& content, t
       tpRemoveChar(param.contentDisposition, ' ');
     }
 
-    for(int i=1; i<int(parts.size()); i++)
+    for(size_t i=1; i<parts.size(); i++)
     {
       std::string part = parts.at(i);
       tpRemoveChar(part, ' ');
-      err << "Part:" << part << "\n";
 
       if(tpStartsWith(part, "name="))
       {
@@ -182,7 +179,6 @@ bool parseMultipartParam(std::ostream& err, const boost::string_view& content, t
   }
 
   param.data = content.substr(contentStart).to_string();
-
   return true;
 }
 
@@ -216,8 +212,8 @@ bool splitMultipartParams(std::ostream& err,
     std::vector<std::string> parts;
     tpSplit(parts, content, boundary);
 
-    int iMax = parts.size()-1;
-    for(int i=1; i<iMax; i++)
+    size_t iMax = parts.size()-1;
+    for(size_t i=1; i<iMax; i++)
     {
       std::string& part = parts.at(i);
       if(part.size()>3)
@@ -245,142 +241,156 @@ Server::Server(tp_www::Route* root):
 }
 
 //##################################################################################################
-void Server::exec()
-{  
-  FCGX_Request fcgiRequest;
-
+void Server::exec(int threadCount)
+{
   FCGX_Init();
-  FCGX_InitRequest(&fcgiRequest, 0, 0);
 
-  while(FCGX_Accept_r(&fcgiRequest) == 0)
+  std::vector<std::thread*> threads;
+
+  for(int i=0; i<threadCount; i++)
   {
-    bool        error        = false;
-    int         errorCode    = 200;
-    std::string errorMessage = "";
-
-    fcgi_streambuf cin_fcgi_streambuf(fcgiRequest.in);
-    fcgi_streambuf cout_fcgi_streambuf(fcgiRequest.out);
-    fcgi_streambuf cerr_fcgi_streambuf(fcgiRequest.err);
-
-    std::istream fcgiCin ( &cin_fcgi_streambuf);
-    std::ostream fcgiCout(&cout_fcgi_streambuf);
-    std::ostream fcgiCerr(&cerr_fcgi_streambuf);
-
-    tp_www::RequestType requestType = tp_www::RequestType::GET;
-    if(!error)
+    threads.push_back(new std::thread([this]()
     {
-      const char* REQUEST_METHOD = FCGX_GetParam("REQUEST_METHOD", fcgiRequest.envp);
-      if(REQUEST_METHOD)
-        requestType = tp_www::requestTypeFromString(REQUEST_METHOD);
-    }
+      FCGX_Request fcgiRequest;
+      FCGX_InitRequest(&fcgiRequest, 0, 0);
 
-    std::vector<std::string> route;
-    std::unordered_map<std::string, std::string> getParams;
-    if(!error)
-    {
-      const char* REQUEST_URI = FCGX_GetParam("REQUEST_URI", fcgiRequest.envp);
-      if(REQUEST_URI)
+      while(FCGX_Accept_r(&fcgiRequest) == 0)
       {
-        std::vector<std::string> splitURI;
-        boost::split(splitURI, REQUEST_URI, [](char a){return a=='?';}, boost::token_compress_on);
+        bool        error        = false;
+        int         errorCode    = 200;
+        std::string errorMessage = "";
 
-        if(!splitURI.empty())
+        fcgi_streambuf cin_fcgi_streambuf(fcgiRequest.in);
+        fcgi_streambuf cout_fcgi_streambuf(fcgiRequest.out);
+        fcgi_streambuf cerr_fcgi_streambuf(fcgiRequest.err);
+
+        std::istream fcgiCin ( &cin_fcgi_streambuf);
+        std::ostream fcgiCout(&cout_fcgi_streambuf);
+        std::ostream fcgiCerr(&cerr_fcgi_streambuf);
+
+        tp_www::RequestType requestType = tp_www::RequestType::GET;
+        if(!error)
         {
-          boost::split(route, splitURI.at(0), [](char a){return a=='/';}, boost::token_compress_on);
-          route.erase(std::remove(route.begin(), route.end(), ""), route.end());
-
-          if(splitURI.size() == 2)
-            splitParams(splitURI.at(1), getParams);
+          const char* REQUEST_METHOD = FCGX_GetParam("REQUEST_METHOD", fcgiRequest.envp);
+          if(REQUEST_METHOD)
+            requestType = tp_www::requestTypeFromString(REQUEST_METHOD);
         }
-      }
-    }
+
+        std::vector<std::string> route;
+        std::unordered_map<std::string, std::string> getParams;
+        if(!error)
+        {
+          const char* REQUEST_URI = FCGX_GetParam("REQUEST_URI", fcgiRequest.envp);
+          if(REQUEST_URI)
+          {
+            std::vector<std::string> splitURI;
+            boost::split(splitURI, REQUEST_URI, [](char a){return a=='?';}, boost::token_compress_on);
+
+            if(!splitURI.empty())
+            {
+              boost::split(route, splitURI.at(0), [](char a){return a=='/';}, boost::token_compress_on);
+              route.erase(std::remove(route.begin(), route.end(), ""), route.end());
+
+              if(splitURI.size() == 2)
+                splitParams(splitURI.at(1), getParams);
+            }
+          }
+        }
 
 #if 0
-    //Print out the env
-    if(route.size()>0 && route.at(route.size()-1) == "add.cpp")
-    {
-      char **envp = fcgiRequest.envp;
-      std::string env;
-      for(; *envp; envp++)
-        env += *envp + std::string("\n");
-      tp_utils::writeBinaryFile("/home/tom/Desktop/env.dat", env);
-    }
+        //Print out the env
+        if(route.size()>0 && route.at(route.size()-1) == "add")
+        {
+          char **envp = fcgiRequest.envp;
+          std::string env;
+          for(; *envp; envp++)
+            env += *envp + std::string("\n");
+          tp_utils::writeBinaryFile("/home/tom/Desktop/env.dat", env);
+        }
 #endif
 
-    std::unordered_map<std::string, std::string> postParams;
-    std::unordered_map<std::string, tp_www::MultipartFormData> multipartFormData;
-    if(!error)
-    {
-      if (requestType == tp_www::RequestType::POST)
-      {
-        int contentLength = atoi(FCGX_GetParam("CONTENT_LENGTH", fcgiRequest.envp));
-
-        if(contentLength>0)
+        std::unordered_map<std::string, std::string> postParams;
+        std::unordered_map<std::string, tp_www::MultipartFormData> multipartFormData;
+        if(!error)
         {
-          const char* CONTENT_TYPE = FCGX_GetParam("CONTENT_TYPE", fcgiRequest.envp);
-          std::string contentType;
-          if(CONTENT_TYPE)
-            contentType = CONTENT_TYPE;
-
-          std::string content;
-          content.resize(contentLength);
-          fcgiCin.read(&content[0], contentLength);
-
-          if((fcgiCin.rdstate() & std::ifstream::failbit) == 0)
+          if (requestType == tp_www::RequestType::POST)
           {
-            //-- Multipart form data ---------------------------------------------------------------
-            static const std::string multipart("multipart/form-data;");
-            if(tpStartsWith(contentType, multipart))
+            size_t contentLength = size_t(tpMax(0, atoi(FCGX_GetParam("CONTENT_LENGTH", fcgiRequest.envp))));
+
+            if(contentLength>0)
             {
-              if(!splitMultipartParams(fcgiCerr, content, contentType, multipartFormData))
+              const char* CONTENT_TYPE = FCGX_GetParam("CONTENT_TYPE", fcgiRequest.envp);
+              std::string contentType;
+              if(CONTENT_TYPE)
+                contentType = CONTENT_TYPE;
+
+              std::string content;
+              content.resize(contentLength);
+              fcgiCin.read(&content[0], std::streamsize(contentLength));
+
+              if((fcgiCin.rdstate() & std::ifstream::failbit) == 0)
+              {
+                //-- Multipart form data -----------------------------------------------------------
+                static const std::string multipart("multipart/form-data;");
+                if(tpStartsWith(contentType, multipart))
+                {
+                  if(!splitMultipartParams(fcgiCerr, content, contentType, multipartFormData))
+                  {
+                    error        = true;
+                    errorCode    = 400;
+                    errorMessage = "Failed to parse multipart/form-data.";
+                  }
+                }
+
+                //-- Conventional post params ------------------------------------------------------
+                else
+                {
+                  splitParams(content, postParams);
+                }
+              }
+              else
               {
                 error        = true;
                 errorCode    = 400;
-                errorMessage = "Failed to parse multipart/form-data.";
+                errorMessage = "Failed to read content.";
               }
             }
-
-            //-- Conventional post params ----------------------------------------------------------
-            else
-            {
-              splitParams(content, postParams);
-            }
           }
-          else
+
+          const char* QUERY_STRING = FCGX_GetParam("QUERY_STRING", fcgiRequest.envp);
+          if(QUERY_STRING)
           {
-            error        = true;
-            errorCode    = 400;
-            errorMessage = "Failed to read content.";
+            fcgiCerr << QUERY_STRING;
+
           }
         }
+
+        tp_www::Request request(fcgiCout,
+                                fcgiCerr,
+                                route,
+                                requestType,
+                                postParams,
+                                getParams,
+                                multipartFormData);
+
+        if(error)
+        {
+          request.sendHeader(errorCode, "text/html");
+          request.out() << errorMessage;
+        }
+        else if(!m_root->handleRequest(request, 0))
+        {
+          request.sendHeader(404, "text/html");
+          request.out() << "Page Not Found 404";
+        }
       }
+    }));
+  }
 
-      const char* QUERY_STRING = FCGX_GetParam("QUERY_STRING", fcgiRequest.envp);
-      if(QUERY_STRING)
-      {
-        fcgiCerr << QUERY_STRING;
-
-      }
-    }
-
-    tp_www::Request request(fcgiCout,
-                            fcgiCerr,
-                            route,
-                            requestType,
-                            postParams,
-                            getParams,
-                            multipartFormData);
-
-    if(error)
-    {
-      request.sendHeader(errorCode, "text/html");
-      request.out() << errorMessage;
-    }
-    else if(!m_root->handleRequest(request, 0))
-    {
-      request.sendHeader(404, "text/html");
-      request.out() << "Page Not Found 404";
-    }
+  for(std::thread* t : threads)
+  {
+    t->join();
+    delete t;
   }
 }
 }
