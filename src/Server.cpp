@@ -6,11 +6,6 @@
 #include "tp_utils/FileUtils.h"
 #include "tp_utils/DebugUtils.h"
 
-#include <boost/algorithm/string.hpp>
-#include <boost/algorithm/string/iter_find.hpp>
-#include <boost/algorithm/string/finder.hpp>
-#include <boost/utility/string_view.hpp>
-
 //dnf install fcgi-devel nginx spawn-fcgi -y
 #include <fcgio.h>
 
@@ -89,12 +84,12 @@ void decodeURL(std::string& text)
 void splitParams(const std::string& content, std::unordered_map<std::string, std::string>& params)
 {
   std::vector<std::string> paramPairs;
-  boost::split(paramPairs, content, [](char a){return a=='&';}, boost::token_compress_on);
+  tpSplit(paramPairs, content, '&', tp_utils::SplitBehavior::SkipEmptyParts);
 
   for(const std::string& paramPair : paramPairs)
   {
     std::vector<std::string> parts;
-    boost::split(parts, paramPair, [](char a){return a=='=';}, boost::token_compress_on);
+    tpSplit(parts, paramPair, '=', tp_utils::SplitBehavior::SkipEmptyParts);
 
     if(parts.size() == 2)
     {
@@ -110,7 +105,7 @@ void splitParams(const std::string& content, std::unordered_map<std::string, std
 }
 
 //##################################################################################################
-bool parseMultipartParam(std::ostream& err, const boost::string_view& content, tp_www::MultipartFormData& param)
+bool parseMultipartParam(std::ostream& err, const std::string& content, tp_www::MultipartFormData& param)
 {
   size_t headerEnd = content.find("\r\n\r\n");
   if(headerEnd>=content.size())
@@ -119,7 +114,7 @@ bool parseMultipartParam(std::ostream& err, const boost::string_view& content, t
   size_t contentStart = headerEnd+4;
 
   std::vector<std::string> headders;
-  tpSplit(headders, content.substr(0, headerEnd).to_string(), "\r\n");
+  tpSplit(headders, content.substr(0, headerEnd), "\r\n");
 
   for(const std::string& headder : headders)
   {
@@ -178,7 +173,7 @@ bool parseMultipartParam(std::ostream& err, const boost::string_view& content, t
     }
   }
 
-  param.data = content.substr(contentStart).to_string();
+  param.data = content.substr(contentStart);
   return true;
 }
 
@@ -218,9 +213,8 @@ bool splitMultipartParams(std::ostream& err,
       std::string& part = parts.at(i);
       if(part.size()>3)
       {
-        boost::string_view str(part.data()+2, part.size()-4);
         tp_www::MultipartFormData param;
-        parseMultipartParam(err, str, param);
+        parseMultipartParam(err, part.substr(2, part.size()-4), param);
         params[param.name] = param;
       }
     }
@@ -284,11 +278,11 @@ void Server::exec(int threadCount)
           if(REQUEST_URI)
           {
             std::vector<std::string> splitURI;
-            boost::split(splitURI, REQUEST_URI, [](char a){return a=='?';}, boost::token_compress_on);
+            tpSplit(splitURI, REQUEST_URI, '?', tp_utils::SplitBehavior::SkipEmptyParts);
 
             if(!splitURI.empty())
             {
-              boost::split(route, splitURI.at(0), [](char a){return a=='/';}, boost::token_compress_on);
+              tpSplit(route, splitURI.at(0), '/', tp_utils::SplitBehavior::SkipEmptyParts);
               route.erase(std::remove(route.begin(), route.end(), ""), route.end());
 
               if(splitURI.size() == 2)
