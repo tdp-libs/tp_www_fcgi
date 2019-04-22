@@ -5,14 +5,15 @@
 
 #include "tp_utils/FileUtils.h"
 #include "tp_utils/DebugUtils.h"
+#include "tp_utils/MutexUtils.h"
 
 //dnf install fcgi-devel nginx spawn-fcgi -y
 #include <fcgio.h>
 
 #include <fstream>
 #include <thread>
-
 #include <vector>
+#include <atomic>
 
 namespace tp_www_fcgi
 {
@@ -381,10 +382,24 @@ void Server::exec(int threadCount)
     }));
   }
 
-  for(std::thread* t : threads)
+  std::atomic_bool masterThreadComplete = false;
+  std::thread masterThread([&]()
   {
-    t->join();
-    delete t;
+    for(std::thread* t : threads)
+    {
+      t->join();
+      delete t;
+    }
+
+    masterThreadComplete = true;
+  });
+
+  while(!masterThreadComplete)
+  {
+    pollEventCallback();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+
+  masterThread.join();
 }
 }
