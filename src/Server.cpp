@@ -304,11 +304,13 @@ void Server::exec(int threadCount)
         }
 #endif
 
+        std::string content;
         std::unordered_map<std::string, std::string> postParams;
         std::unordered_map<std::string, tp_www::MultipartFormData> multipartFormData;
         if(!error)
         {
-          if (requestType == tp_www::RequestType::POST)
+          if (requestType == tp_www::RequestType::POST ||
+              requestType == tp_www::RequestType::PUT)
           {
             size_t contentLength = size_t(tpMax(0, atoi(FCGX_GetParam("CONTENT_LENGTH", fcgiRequest.envp))));
 
@@ -319,14 +321,16 @@ void Server::exec(int threadCount)
               if(CONTENT_TYPE)
                 contentType = CONTENT_TYPE;
 
-              std::string content;
               content.resize(contentLength);
               fcgiCin.read(&content[0], std::streamsize(contentLength));
 
               if((fcgiCin.rdstate() & std::ifstream::failbit) == 0)
               {
-                //-- Multipart form data -----------------------------------------------------------
                 static const std::string multipart("multipart/form-data;");
+                static const std::string applicationJSON("application/json;");
+
+
+                //-- Multipart form data -----------------------------------------------------------
                 if(tpStartsWith(contentType, multipart))
                 {
                   if(!splitMultipartParams(fcgiCerr, content, contentType, multipartFormData))
@@ -335,6 +339,12 @@ void Server::exec(int threadCount)
                     errorCode    = 400;
                     errorMessage = "Failed to parse multipart/form-data.";
                   }
+                }
+
+                //-- Application JSON --------------------------------------------------------------
+                else if(tpStartsWith(contentType, applicationJSON))
+                {
+
                 }
 
                 //-- Conventional post params ------------------------------------------------------
@@ -364,6 +374,7 @@ void Server::exec(int threadCount)
                                 fcgiCerr,
                                 route,
                                 requestType,
+                                content,
                                 postParams,
                                 getParams,
                                 multipartFormData);
