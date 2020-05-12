@@ -8,7 +8,9 @@
 #include "tp_utils/MutexUtils.h"
 
 //dnf install fcgi-devel nginx spawn-fcgi -y
+#ifdef TP_LINUX
 #include <fcgio.h>
+#endif
 
 #include <fstream>
 #include <thread>
@@ -238,6 +240,7 @@ Server::Server(tp_www::Route* root):
 //##################################################################################################
 void Server::exec(int threadCount)
 {
+#ifdef TP_LINUX
   FCGX_Init();
 
   std::vector<std::thread*> threads;
@@ -412,5 +415,9 @@ void Server::exec(int threadCount)
   }
 
   masterThread.join();
+
+#else
+  TP_UNUSED(threadCount);
+#endif
 }
 }
